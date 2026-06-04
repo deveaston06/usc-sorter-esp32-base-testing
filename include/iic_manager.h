@@ -2,24 +2,72 @@
 #define IIC_MANAGER_H
 
 #include <Arduino.h>
+#include <EEPROM.h>
 #include <Wire.h>
-#include <lcd_manager.h>
+#include <led_manager.h>
 
+// ── I2C pins ──────────────────────────────────────────────────
 #define I2C_SDA 21
 #define I2C_SCL 22
-#define ALERT 23
 #define I2C_FREQ 100000
-#define CMD_BLINK 0x01
-#define SCAN_START 0x08
-#define SCAN_END 0x77
 
-#define BLINK_FEEDBACK_MS 300
+// ── ALERT pin ─────────────────────────────────────────────────
+#define PIN_ALERT 23
 
-extern uint8_t slaveCount;
-extern uint8_t slaveList[112]; // max possible I2C slaves
+// ── Commands ──────────────────────────────────────────────────
+#define CMD_GET_UDID 0x01
+#define CMD_ASSIGN_ADDR 0x02
+#define CMD_PREPARE_ARP 0x03
+#define CMD_SCAN_MOD 0x05
+#define CMD_SYNC_PSA 0x06
+#define CMD_LED_GREEN 0x10
+#define CMD_LED_RED 0x11
+#define CMD_LED_BLUE 0x12
 
-void setupI2C();
-void scanI2C();
-void sendBlink(uint8_t addr);
+// ── Addresses ─────────────────────────────────────────────────
+#define ADDR_ARP_DEFAULT 0x55
+
+// ── EEPROM layout ─────────────────────────────────────────────
+// 0-8:   Own UDID (9 bytes)
+// 9:     PSA count (1 byte)
+// 10-21: PSA address list, 12 entries x 1 byte
+#define EE_UDID_START 0
+#define EE_PSA_COUNT 9
+#define EE_PSA_LIST 10
+#define PSA_MAX_ENTRIES 12
+#define EEPROM_SIZE 64
+
+// ── UDID constants ────────────────────────────────────────────
+#define UDID_SIZE 9
+#define DEVICE_TYPE_ESP32 0x3232
+#define PROTOCOL_VERSION 0x0001
+#define CAPABILITIES 0x04 // master only
+
+// ── Drawer table ──────────────────────────────────────────────
+#define MAX_DRAWERS 8
+#define MAX_TINY_PER_DRAWER 8
+
+struct DrawerEntry {
+  uint8_t addr;
+  uint8_t tinyAddrs[MAX_TINY_PER_DRAWER];
+  uint8_t tinyCount;
+};
+
+static DrawerEntry drawers[MAX_DRAWERS];
+
+#define SCAN_INTERVAL_MS 5000
+
+void iic_init();
+void iic_update();
+void iic_writeUDID(uint32_t serialNumber);
+uint8_t iic_getDrawerCount();
+uint8_t iic_getDrawerAddr(uint8_t idx);
+uint8_t iic_getTinyCount(uint8_t drawerIdx);
+uint8_t iic_getTinyAddr(uint8_t drawerIdx, uint8_t tinyIdx);
+void iic_sendLedGreen(uint8_t drawerAddr, uint8_t tinyAddr);
+void iic_sendLedRed(uint8_t drawerAddr, uint8_t tinyAddr);
+void iic_addPSA(uint8_t tinyAddr);
+void iic_removePSA(uint8_t tinyAddr);
+bool iic_isPSA(uint8_t tinyAddr);
 
 #endif // !IIC_MANAGER_H
