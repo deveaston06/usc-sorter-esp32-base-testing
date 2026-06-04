@@ -1,4 +1,4 @@
-#include <lcd_manager.h>
+#include <lcd_encoder_manager.h>
 
 static const char *COMMANDS[NUM_COMMANDS] = {"Green LED On  ", "Red LED On    ",
                                              "Add PSA       ", "Remove PSA    ",
@@ -330,7 +330,7 @@ static void handleButton() {
 // ─────────────────────────────────────────────────────────────
 // PUBLIC: INIT
 // ─────────────────────────────────────────────────────────────
-void encoder_init() {
+void lcd_encoder_init() {
   lcd.begin(LCD_COLS, LCD_ROWS);
   lcd.createChar(CHAR_ARROW, charCursor);
   lcd.createChar(CHAR_ARROW_UP, charArrowU);

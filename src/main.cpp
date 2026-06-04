@@ -32,7 +32,7 @@
 
 #include <Arduino.h>
 #include <iic_manager.h>
-#include <lcd_manager.h>
+#include <lcd_encoder_manager.h>
 #include <led_manager.h>
 
 // ─────────────────────────────────────────────────────────────
