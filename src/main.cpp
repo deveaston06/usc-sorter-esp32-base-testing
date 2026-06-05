@@ -1,14 +1,5 @@
 // ─────────────────────────────────────────────────────────────
 // main.cpp — ESP32 Base Controller
-// PlatformIO + Arduino framework
-//
-// platformio.ini:
-//   [env:esp32]
-//   platform  = espressif32
-//   board     = esp32dev
-//   framework = arduino
-//   lib_deps  =
-//     arduino-libraries/LiquidCrystal
 //
 // Hardware summary:
 //   LCD (parallel 4-bit)
@@ -42,7 +33,7 @@ void setup() {
   Serial.begin(115200);
 
   // ── FIRST TIME ONLY: write own UDID ───────────────────────
-  iic_writeUDID(0x00000100); // ESP32 unit 1
+  // iic_writeUDID(0x00000100); // ESP32 unit 1
 
   iic_init();
   // iic_init() runs initial enumeration automatically.

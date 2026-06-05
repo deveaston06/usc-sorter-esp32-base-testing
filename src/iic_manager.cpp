@@ -324,8 +324,8 @@ void iic_init() {
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(I2C_FREQ);
 
-  pinMode(PIN_ALERT, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(PIN_ALERT), onAlert, FALLING);
+  pinMode(PIN_ALERT, INPUT);
+  attachInterrupt(digitalPinToInterrupt(PIN_ALERT), onAlert, LOW);
 
   runEnumeration();
 }
