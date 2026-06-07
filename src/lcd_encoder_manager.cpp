@@ -288,10 +288,14 @@ static void readEncoder() {
 }
 
 static void handleEncoder() {
-  if (encDelta == 0)
-    return;
-  cursorIdx += encDelta;
+  int move = encDelta;
   encDelta = 0;
+
+  if (move == 0)
+    return;
+
+  cursorIdx += move;
+
   clampCursor();
   needsRedraw = true;
 }
@@ -317,7 +321,7 @@ static void handleButton() {
     }
   }
 
-  if (btnState == HIGH && lastBtnState == LOW) {
+  if (btnState == LOW && lastBtnState == HIGH) {
     if (!btnHoldFired) {
       executeSelection();
     }

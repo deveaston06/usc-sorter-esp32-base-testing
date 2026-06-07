@@ -158,7 +158,7 @@ static void fetchTinyList(uint8_t drawerAddr) {
     return;
 
   Wire.beginTransmission(drawerAddr);
-  Wire.write(CMD_SCAN_MOD);
+  Wire.write(CMD_SCAN_MODULES);
   if (Wire.endTransmission() != 0)
     return;
 
@@ -184,14 +184,14 @@ static void fetchTinyList(uint8_t drawerAddr) {
 // ─────────────────────────────────────────────────────────────
 static bool getUdidCycle() {
   Wire.beginTransmission(ADDR_ARP_DEFAULT);
-  if (Wire.endTransmission() != 0)
-    return false;
-
-  Wire.beginTransmission(ADDR_ARP_DEFAULT);
   Wire.write(CMD_GET_UDID);
   if (Wire.endTransmission() != 0)
     return false;
 
+  delay(5); // Give slaves time to prepare
+
+  // Step 2: Request UDID from the ARP address
+  // During SMBus ARP, the winning slave responds
   uint8_t received =
       Wire.requestFrom((uint8_t)ADDR_ARP_DEFAULT, (uint8_t)UDID_SIZE);
   if (received < UDID_SIZE)
@@ -204,6 +204,7 @@ static bool getUdidCycle() {
 
   uint8_t newAddr = getNextDrawerAddr();
 
+  // Step 3: Assign address to winning device
   Wire.beginTransmission(ADDR_ARP_DEFAULT);
   Wire.write(CMD_ASSIGN_ADDR);
   for (uint8_t i = 0; i < UDID_SIZE; i++)
@@ -213,6 +214,7 @@ static bool getUdidCycle() {
 
   delay(15);
 
+  // Step 4: Verify new address works
   Wire.beginTransmission(newAddr);
   if (Wire.endTransmission() == 0) {
     drawer_add(newAddr);
@@ -228,6 +230,9 @@ static bool getUdidCycle() {
 // are always up to date with ESP32 source of truth
 // ─────────────────────────────────────────────────────────────
 static void runEnumeration() {
+  // Detach interrupt before starting
+  detachInterrupt(digitalPinToInterrupt(PIN_ALERT));
+
   Wire.beginTransmission(ADDR_ARP_DEFAULT);
   Wire.write(CMD_PREPARE_ARP);
   Wire.endTransmission();
@@ -243,6 +248,29 @@ static void runEnumeration() {
   syncPSA();
 
   encoder_requestRedraw();
+  Serial.println("Enumeration complete");
+
+  // Wait for ALERT line to go HIGH before re-attaching interrupt
+  // This prevents immediate re-triggering
+  unsigned long startWait = millis();
+  while (digitalRead(PIN_ALERT) == LOW) {
+    if (millis() - startWait > 5000) {
+      Serial.println("Warning: ALERT stuck LOW");
+      break;
+    }
+    delay(10);
+  }
+
+  // Small extra delay for debounce
+  delay(50);
+
+  // Only re-attach if ALERT is HIGH
+  if (digitalRead(PIN_ALERT) == HIGH) {
+    attachInterrupt(digitalPinToInterrupt(PIN_ALERT), onAlert, FALLING);
+  } else {
+    // ALERT still low - set flag to retry later
+    alertPending = true;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -325,9 +353,8 @@ void iic_init() {
   Wire.setClock(I2C_FREQ);
 
   pinMode(PIN_ALERT, INPUT);
-  attachInterrupt(digitalPinToInterrupt(PIN_ALERT), onAlert, LOW);
-
-  runEnumeration();
+  attachInterrupt(digitalPinToInterrupt(PIN_ALERT), onAlert, FALLING);
+  Serial.println("testing");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -336,6 +363,8 @@ void iic_init() {
 void iic_update() {
   if (alertPending) {
     alertPending = false;
+    detachInterrupt(digitalPinToInterrupt(PIN_ALERT));
+    Serial.println("Running Enumeration");
     runEnumeration();
   }
 

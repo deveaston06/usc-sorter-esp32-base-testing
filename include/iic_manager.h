@@ -18,7 +18,7 @@
 #define CMD_GET_UDID 0x01
 #define CMD_ASSIGN_ADDR 0x02
 #define CMD_PREPARE_ARP 0x03
-#define CMD_SCAN_MOD 0x05
+#define CMD_SCAN_MODULES 0x05
 #define CMD_SYNC_PSA 0x06
 #define CMD_LED_GREEN 0x10
 #define CMD_LED_RED 0x11
