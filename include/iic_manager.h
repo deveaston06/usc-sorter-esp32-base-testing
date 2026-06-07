@@ -46,6 +46,7 @@
 // ── Drawer table ──────────────────────────────────────────────
 #define MAX_DRAWERS 8
 #define MAX_TINY_PER_DRAWER 8
+#define DRAWER_START_ADDRESS 0x10
 
 struct DrawerEntry {
   uint8_t addr;

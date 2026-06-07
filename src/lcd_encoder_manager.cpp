@@ -308,12 +308,14 @@ static void handleEncoder() {
 static void handleButton() {
   bool btnState = digitalRead(ENC_SW);
 
+  // press detected — record time, reset hold flag
   if (btnState == LOW && lastBtnState == HIGH) {
     btnPressTime = millis();
     btnHoldFired = false;
     delay(DEBOUNCE_MS);
   }
 
+  // held — check if hold threshold reached
   if (btnState == LOW && !btnHoldFired) {
     if (millis() - btnPressTime >= HOLD_MS) {
       btnHoldFired = true;
@@ -321,7 +323,8 @@ static void handleButton() {
     }
   }
 
-  if (btnState == LOW && lastBtnState == HIGH) {
+  // released — execute only if this was a short press, not a hold
+  if (btnState == HIGH && lastBtnState == LOW) {
     if (!btnHoldFired) {
       executeSelection();
     }

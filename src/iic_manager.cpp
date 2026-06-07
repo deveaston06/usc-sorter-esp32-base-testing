@@ -1,7 +1,7 @@
 #include <iic_manager.h>
 
 static uint8_t drawerCount = 0;
-static uint8_t nextDrawerAddr = 0x10;
+static uint8_t nextDrawerAddr = DRAWER_START_ADDRESS;
 
 // ── PSA list (source of truth on ESP32) ──────────────────────
 static uint8_t psaList[PSA_MAX_ENTRIES];
