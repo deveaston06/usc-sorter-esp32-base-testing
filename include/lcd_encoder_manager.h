@@ -26,17 +26,25 @@
 #define HOLD_MS 1000
 
 // ── Menu levels ───────────────────────────────────────────────
-#define LEVEL_DRAWERS 0
-#define LEVEL_CONTAINERS 1
-#define LEVEL_COMMANDS 2
-#define NUM_COMMANDS 5
+#define LEVEL_TOP 0
+#define LEVEL_DRAWERS 1
+#define LEVEL_CONTAINERS 2
+#define LEVEL_COMMANDS 3
+#define LEVEL_PSA_LIST 4
+#define LEVEL_PSA_COMMANDS 5
 
-// Command indices
+// Drawer commands
 #define CMD_IDX_GREEN 0
 #define CMD_IDX_RED 1
 #define CMD_IDX_ADD_PSA 2
-#define CMD_IDX_REMOVE_PSA 3
+#define CMD_IDX_REM_PSA 3
 #define CMD_IDX_BACK 4
+
+// PSA commands
+#define PSA_CMD_IDX_GREEN 0
+#define PSA_CMD_IDX_RED 1
+#define PSA_CMD_IDX_REMOVE 2
+#define PSA_CMD_IDX_BACK 3
 
 // Custom Characters
 #define CHAR_ARROW 0

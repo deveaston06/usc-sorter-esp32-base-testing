@@ -1,8 +1,56 @@
+// ─────────────────────────────────────────────────────────────
+// lcd_encoder_manager.cpp — ESP32 Base Controller
+//
+// Menu hierarchy (6 levels):
+//
+//   LEVEL_TOP
+//     [0] Browse Drawers  → LEVEL_DRAWERS
+//     [1] PSA Devices     → LEVEL_PSA_LIST
+//
+//   LEVEL_DRAWERS
+//     [0..N] Drawer 0xXX [icon] → LEVEL_CONTAINERS
+//
+//   LEVEL_CONTAINERS
+//     [0..N] ATtiny 0xXX [icon][P] → LEVEL_COMMANDS
+//
+//   LEVEL_COMMANDS
+//     [0] Green LED On
+//     [1] Red LED On
+//     [2] Add PSA
+//     [3] Remove PSA
+//     [4] Back
+//
+//   LEVEL_PSA_LIST
+//     [0..N] 0xXX [LED icon] [ON/--] → LEVEL_PSA_COMMANDS
+//            ON = device currently enumerated
+//            -- = device not currently on bus
+//
+//   LEVEL_PSA_COMMANDS
+//     [0] Green LED On   (sends command if available, shows error if not)
+//     [1] Red LED On     (sends command if available, shows error if not)
+//     [2] Remove PSA
+//     [3] Back
+//
+// Controls:
+//   Rotate    → scroll list
+//   Press     → select / execute
+//   Hold 1s   → go back one level
+// ─────────────────────────────────────────────────────────────
+
 #include <lcd_encoder_manager.h>
 
-static const char *COMMANDS[NUM_COMMANDS] = {"Green LED On  ", "Red LED On    ",
-                                             "Add PSA       ", "Remove PSA    ",
-                                             "Back          "};
+// Top level items
+#define NUM_TOP_ITEMS 2
+static const char *TOP_ITEMS[2] = {"Browse Drawers  ", "PSA Devices     "};
+
+#define NUM_COMMANDS 5
+static const char *COMMANDS[5] = {"Green LED On  ", "Red LED On    ",
+                                  "Add PSA       ", "Remove PSA    ",
+                                  "Back          "};
+
+#define NUM_PSA_COMMANDS 4
+static const char *PSA_COMMANDS[NUM_PSA_COMMANDS] = {
+    "Green LED On  ", "Red LED On    ", "Remove PSA    ", "Back          "};
 
 // ── LCD instance ──────────────────────────────────────────────
 static LiquidCrystal lcd(LCD_RS, LCD_EN, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
@@ -13,11 +61,12 @@ static byte charArrowU[8] = {0x04, 0x0E, 0x1F, 0x04, 0x04, 0x04, 0x04, 0x00};
 static byte charArrowD[8] = {0x04, 0x04, 0x04, 0x04, 0x1F, 0x0E, 0x04, 0x00};
 
 // ── Menu state ────────────────────────────────────────────────
-static uint8_t menuLevel = LEVEL_DRAWERS;
+static uint8_t menuLevel = LEVEL_TOP;
 static int8_t cursorIdx = 0;
 static int8_t scrollOffset = 0;
-static uint8_t selectedDrawer = 0; // drawerIdx selected at level 0
-static uint8_t selectedTiny = 0;   // tinyIdx selected at level 1
+static uint8_t selectedDrawer = 0; // drawer index in drawers[]
+static uint8_t selectedTiny = 0;   // tiny index within selected drawer
+static uint8_t selectedPSA = 0;    // PSA index in psaEntries[]
 static bool needsRedraw = true;
 
 // ── Encoder state ─────────────────────────────────────────────
@@ -34,12 +83,18 @@ static bool btnHoldFired = false;
 // ─────────────────────────────────────────────────────────────
 static uint8_t listLength() {
   switch (menuLevel) {
+  case LEVEL_TOP:
+    return NUM_TOP_ITEMS;
   case LEVEL_DRAWERS:
     return iic_getDrawerCount();
   case LEVEL_CONTAINERS:
     return iic_getTinyCount(selectedDrawer);
   case LEVEL_COMMANDS:
     return NUM_COMMANDS;
+  case LEVEL_PSA_LIST:
+    return iic_getPSACount();
+  case LEVEL_PSA_COMMANDS:
+    return NUM_PSA_COMMANDS;
   default:
     return 0;
   }
@@ -70,24 +125,40 @@ static void clampCursor() {
 // ─────────────────────────────────────────────────────────────
 static void drawHeader() {
   lcd.setCursor(0, 0);
+  char buf[21];
+
   switch (menuLevel) {
+  case LEVEL_TOP:
+    lcd.print("Main Menu           ");
+    break;
+
   case LEVEL_DRAWERS:
     lcd.print("Drawers             ");
     break;
-  case LEVEL_CONTAINERS: {
-    char buf[21];
+
+  case LEVEL_CONTAINERS:
     snprintf(buf, sizeof(buf), "Drawer 0x%02X         ",
              iic_getDrawerAddr(selectedDrawer));
     lcd.print(buf);
     break;
-  }
+
   case LEVEL_COMMANDS: {
     uint8_t ta = iic_getTinyAddr(selectedDrawer, selectedTiny);
-    char tag[6] = "     ";
-    if (iic_isPSA(ta))
-      strncpy(tag, "[PSA]", 5);
-    char buf[21];
-    snprintf(buf, sizeof(buf), "0x%02X %s          ", ta, tag);
+    snprintf(buf, sizeof(buf), "0x%02X %s          ", ta,
+             iic_isPSA(ta) ? "[PSA]" : "     ");
+    lcd.print(buf);
+    break;
+  }
+
+  case LEVEL_PSA_LIST:
+    lcd.print("PSA Devices         ");
+    break;
+
+  case LEVEL_PSA_COMMANDS: {
+    uint8_t addr = iic_getPSAAddr(selectedPSA);
+    bool avail = iic_isPSAAvailable(selectedPSA);
+    snprintf(buf, sizeof(buf), "0x%02X PSA [%s]      ", addr,
+             avail ? "ON" : "--");
     lcd.print(buf);
     break;
   }
@@ -124,29 +195,59 @@ static void drawList() {
 
     lcd.print(" ");
 
+    char buf[18];
+
     // item label
     switch (menuLevel) {
+
+    case LEVEL_TOP:
+      snprintf(buf, sizeof(buf), "%-18s", TOP_ITEMS[idx]);
+      lcd.print(buf);
+      break;
+
     case LEVEL_DRAWERS: {
       uint8_t addr = iic_getDrawerAddr(idx);
       char icon = led_getModuleIcon(addr);
-      char buf[18];
       snprintf(buf, sizeof(buf), "0x%02X [%c]          ", addr, icon);
       lcd.print(buf);
       break;
     }
+
     case LEVEL_CONTAINERS: {
       uint8_t addr = iic_getTinyAddr(selectedDrawer, idx);
       char icon = led_getModuleIcon(addr);
       // show [P] tag if this ATtiny85 is in PSA list
       char psaTag = iic_isPSA(addr) ? 'P' : ' ';
-      char buf[18];
       snprintf(buf, sizeof(buf), "0x%02X [%c][%c]       ", addr, icon, psaTag);
       lcd.print(buf);
       break;
     }
-    case LEVEL_COMMANDS: {
-      char buf[18];
+
+    case LEVEL_COMMANDS:
       snprintf(buf, sizeof(buf), "%-18s", COMMANDS[idx]);
+      lcd.print(buf);
+      break;
+
+    case LEVEL_PSA_LIST: {
+      uint8_t addr = iic_getPSAAddr(idx);
+      bool avail = iic_isPSAAvailable(idx);
+      char icon = led_getModuleIcon(addr);
+      // format: 0xXX [icon] ON  or  0xXX [icon] --
+      snprintf(buf, sizeof(buf), "0x%02X [%c] %s        ", addr, icon,
+               avail ? "ON " : "-- ");
+      lcd.print(buf);
+      break;
+    }
+
+    case LEVEL_PSA_COMMANDS: {
+      // dim LED commands if PSA device is not available
+      bool avail = iic_isPSAAvailable(selectedPSA);
+      if ((idx == PSA_CMD_IDX_GREEN || idx == PSA_CMD_IDX_RED) && !avail) {
+        // show command but with unavailable marker
+        snprintf(buf, sizeof(buf), "%-14s[--]", PSA_COMMANDS[idx]);
+      } else {
+        snprintf(buf, sizeof(buf), "%-18s", PSA_COMMANDS[idx]);
+      }
       lcd.print(buf);
       break;
     }
@@ -192,6 +293,20 @@ static void executeSelection() {
 
   switch (menuLevel) {
 
+  case LEVEL_TOP:
+    if (cursorIdx == 0) {
+      menuLevel = LEVEL_DRAWERS;
+      cursorIdx = 0;
+      scrollOffset = 0;
+      needsRedraw = true;
+    } else {
+      menuLevel = LEVEL_PSA_LIST;
+      cursorIdx = 0;
+      scrollOffset = 0;
+      needsRedraw = true;
+    }
+    break;
+
   case LEVEL_DRAWERS:
     if (iic_getDrawerCount() == 0)
       return;
@@ -229,14 +344,14 @@ static void executeSelection() {
 
     case CMD_IDX_ADD_PSA:
       if (!iic_isPSA(ta)) {
-        iic_addPSA(ta);
+        iic_addPSA(da, ta);
         showFeedback("PSA added + synced  ");
       } else {
         showFeedback("Already in PSA list ");
       }
       break;
 
-    case CMD_IDX_REMOVE_PSA:
+    case CMD_IDX_REM_PSA:
       if (iic_isPSA(ta)) {
         iic_removePSA(ta);
         showFeedback("PSA removed + synced");
@@ -254,6 +369,62 @@ static void executeSelection() {
     }
     break;
   }
+
+  // ── PSA LIST ──────────────────────────────────────────────
+  case LEVEL_PSA_LIST:
+    if (iic_getPSACount() == 0)
+      return;
+    selectedPSA = cursorIdx;
+    menuLevel = LEVEL_PSA_COMMANDS;
+    cursorIdx = 0;
+    scrollOffset = 0;
+    needsRedraw = true;
+    break;
+
+  // ── PSA COMMANDS ──────────────────────────────────────────
+  case LEVEL_PSA_COMMANDS: {
+    uint8_t psaAddr = iic_getPSAAddr(selectedPSA);
+    bool available = iic_isPSAAvailable(selectedPSA);
+    uint8_t drawerAddr = iic_getPSADrawerAddr(selectedPSA);
+
+    switch (cursorIdx) {
+    case PSA_CMD_IDX_GREEN:
+      if (available) {
+        iic_sendLedGreen(drawerAddr, psaAddr);
+        showFeedback("Green LED sent      ");
+      } else {
+        showFeedback("Device not on bus   ");
+      }
+      break;
+
+    case PSA_CMD_IDX_RED:
+      if (available) {
+        iic_sendLedRed(drawerAddr, psaAddr);
+        showFeedback("Red LED sent        ");
+      } else {
+        showFeedback("Device not on bus   ");
+      }
+      break;
+
+    case PSA_CMD_IDX_REMOVE:
+      iic_removePSA(psaAddr);
+      showFeedback("PSA removed + synced");
+      // go back to PSA list since this entry no longer exists
+      menuLevel = LEVEL_PSA_LIST;
+      cursorIdx = 0;
+      scrollOffset = 0;
+      needsRedraw = true;
+      break;
+
+    case PSA_CMD_IDX_BACK:
+      menuLevel = LEVEL_PSA_LIST;
+      cursorIdx = (int8_t)selectedPSA;
+      scrollOffset = 0;
+      needsRedraw = true;
+      break;
+    }
+    break;
+  }
   }
 }
 
@@ -261,14 +432,36 @@ static void executeSelection() {
 // GO BACK ONE LEVEL (long press)
 // ─────────────────────────────────────────────────────────────
 static void goBack() {
-  if (menuLevel == LEVEL_COMMANDS) {
-    menuLevel = LEVEL_CONTAINERS;
-    cursorIdx = (int8_t)selectedTiny;
+  switch (menuLevel) {
+  case LEVEL_DRAWERS:
+  case LEVEL_PSA_LIST:
+    menuLevel = LEVEL_TOP;
+    cursorIdx = 0;
     scrollOffset = 0;
-  } else if (menuLevel == LEVEL_CONTAINERS) {
+    break;
+
+  case LEVEL_CONTAINERS:
     menuLevel = LEVEL_DRAWERS;
     cursorIdx = (int8_t)selectedDrawer;
     scrollOffset = 0;
+    break;
+
+  case LEVEL_COMMANDS:
+    menuLevel = LEVEL_CONTAINERS;
+    cursorIdx = (int8_t)selectedTiny;
+    scrollOffset = 0;
+    break;
+
+  case LEVEL_PSA_COMMANDS:
+    menuLevel = LEVEL_PSA_LIST;
+    cursorIdx = (int8_t)selectedPSA;
+    scrollOffset = 0;
+    break;
+
+  case LEVEL_TOP:
+  default:
+    // already at top, nothing to do
+    break;
   }
   needsRedraw = true;
 }
@@ -349,11 +542,12 @@ void lcd_encoder_init() {
   pinMode(ENC_SW, INPUT_PULLUP);
   lastCLK = digitalRead(ENC_CLK);
 
+  menuLevel = LEVEL_TOP;
   needsRedraw = true;
 }
 
 // ─────────────────────────────────────────────────────────────
-// PUBLIC: UPDATE (call every loop iteration)
+// PUBLIC: UPDATE
 // ─────────────────────────────────────────────────────────────
 void encoder_update() {
   readEncoder();
@@ -365,6 +559,6 @@ void encoder_update() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// PUBLIC: FORCE REDRAW (call from iic_update after scan)
+// PUBLIC: FORCE REDRAW
 // ─────────────────────────────────────────────────────────────
 void encoder_requestRedraw() { needsRedraw = true; }

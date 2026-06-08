@@ -28,14 +28,15 @@
 #define ADDR_ARP_DEFAULT 0x55
 
 // ── EEPROM layout ─────────────────────────────────────────────
-// 0-8:   Own UDID (9 bytes)
-// 9:     PSA count (1 byte)
-// 10-21: PSA address list, 12 entries x 1 byte
+// 0-8:    Own UDID (9 bytes)
+// 9:      PSA count (1 byte)
+// 10-129: PSA entries, 12 x (UDID 9 + addr 1) = 120 bytes
 #define EE_UDID_START 0
 #define EE_PSA_COUNT 9
 #define EE_PSA_LIST 10
+#define PSA_ENTRY_SIZE 10 // UDID(9) + addr(1)
 #define PSA_MAX_ENTRIES 12
-#define EEPROM_SIZE 64
+#define EEPROM_SIZE 256 // increased from 64
 
 // ── UDID constants ────────────────────────────────────────────
 #define UDID_SIZE 9
@@ -51,10 +52,15 @@
 struct DrawerEntry {
   uint8_t addr;
   uint8_t tinyAddrs[MAX_TINY_PER_DRAWER];
+  uint8_t tinyUdids[MAX_TINY_PER_DRAWER]
+                   [UDID_SIZE]; // per-slot UDID from SCAN_MODULES
   uint8_t tinyCount;
 };
 
-static DrawerEntry drawers[MAX_DRAWERS];
+struct PSAEntry {
+  uint8_t udid[UDID_SIZE];
+  uint8_t addr;
+};
 
 #define SCAN_INTERVAL_MS 5000
 
@@ -67,8 +73,12 @@ uint8_t iic_getTinyCount(uint8_t drawerIdx);
 uint8_t iic_getTinyAddr(uint8_t drawerIdx, uint8_t tinyIdx);
 void iic_sendLedGreen(uint8_t drawerAddr, uint8_t tinyAddr);
 void iic_sendLedRed(uint8_t drawerAddr, uint8_t tinyAddr);
-void iic_addPSA(uint8_t tinyAddr);
+void iic_addPSA(uint8_t drawerAddr, uint8_t tinyAddr);
 void iic_removePSA(uint8_t tinyAddr);
 bool iic_isPSA(uint8_t tinyAddr);
+uint8_t iic_getPSACount();
+uint8_t iic_getPSAAddr(uint8_t idx);
+bool iic_isPSAAvailable(uint8_t idx);
+uint8_t iic_getPSADrawerAddr(uint8_t psaIdx);
 
 #endif // !IIC_MANAGER_H

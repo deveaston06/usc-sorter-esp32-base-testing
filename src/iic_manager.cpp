@@ -4,8 +4,9 @@ static uint8_t drawerCount = 0;
 static uint8_t nextDrawerAddr = DRAWER_START_ADDRESS;
 
 // ── PSA list (source of truth on ESP32) ──────────────────────
-static uint8_t psaList[PSA_MAX_ENTRIES];
+static PSAEntry psaEntries[PSA_MAX_ENTRIES];
 static uint8_t psaCount = 0;
+static DrawerEntry drawers[MAX_DRAWERS];
 
 // ── Own UDID ──────────────────────────────────────────────────
 static uint8_t udid[UDID_SIZE];
@@ -49,7 +50,11 @@ void iic_writeUDID(uint32_t serialNumber) {
 static void psa_save() {
   EEPROM.write(EE_PSA_COUNT, psaCount);
   for (uint8_t i = 0; i < psaCount; i++) {
-    EEPROM.write(EE_PSA_LIST + i, psaList[i]);
+    uint16_t base = EE_PSA_LIST + (i * PSA_ENTRY_SIZE);
+    for (uint8_t j = 0; j < UDID_SIZE; j++) {
+      EEPROM.write(base + j, psaEntries[i].udid[j]);
+    }
+    EEPROM.write(base + UDID_SIZE, psaEntries[i].addr);
   }
   EEPROM.commit();
 }
@@ -58,13 +63,17 @@ static void psa_load() {
   uint8_t count = EEPROM.read(EE_PSA_COUNT);
   psaCount = (count > PSA_MAX_ENTRIES) ? 0 : count;
   for (uint8_t i = 0; i < psaCount; i++) {
-    psaList[i] = EEPROM.read(EE_PSA_LIST + i);
+    uint16_t base = EE_PSA_LIST + (i * PSA_ENTRY_SIZE);
+    for (uint8_t j = 0; j < UDID_SIZE; j++) {
+      psaEntries[i].udid[j] = EEPROM.read(base + j);
+    }
+    psaEntries[i].addr = EEPROM.read(base + UDID_SIZE);
   }
 }
 
 static bool psa_contains(uint8_t addr) {
   for (uint8_t i = 0; i < psaCount; i++) {
-    if (psaList[i] == addr)
+    if (psaEntries[i].addr == addr)
       return true;
   }
   return false;
@@ -72,18 +81,22 @@ static bool psa_contains(uint8_t addr) {
 
 // ─────────────────────────────────────────────────────────────
 // SYNC PSA
-// Broadcasts full PSA list to every known drawer and to 0x55
+// Broadcasts full PSA entries list to every known drawer and to 0x55
 // so newly powered but not yet enumerated RP2040s also receive it
 // ─────────────────────────────────────────────────────────────
 static void syncPSA() {
-  // build payload: [CMD][count][addr1]...[addrN]
-  uint8_t payload[PSA_MAX_ENTRIES + 2];
+  // payload: [CMD][count][udid1 x9][addr1][udid2 x9][addr2]...
+  uint8_t payload[2 + PSA_MAX_ENTRIES * (UDID_SIZE + 1)];
   payload[0] = CMD_SYNC_PSA;
   payload[1] = psaCount;
+  uint8_t offset = 2;
   for (uint8_t i = 0; i < psaCount; i++) {
-    payload[i + 2] = psaList[i];
+    for (uint8_t j = 0; j < UDID_SIZE; j++) {
+      payload[offset++] = psaEntries[i].udid[j];
+    }
+    payload[offset++] = psaEntries[i].addr;
   }
-  uint8_t len = psaCount + 2;
+  uint8_t len = offset;
 
   // send to all known drawers individually
   for (uint8_t i = 0; i < drawerCount; i++) {
@@ -164,8 +177,8 @@ static void fetchTinyList(uint8_t drawerAddr) {
 
   delay(20);
 
-  uint8_t received =
-      Wire.requestFrom(drawerAddr, (uint8_t)(MAX_TINY_PER_DRAWER + 1));
+  uint8_t expectLen = 1 + MAX_TINY_PER_DRAWER * (1 + UDID_SIZE);
+  uint8_t received = Wire.requestFrom(drawerAddr, expectLen);
   if (received < 1)
     return;
 
@@ -174,8 +187,14 @@ static void fetchTinyList(uint8_t drawerAddr) {
     count = MAX_TINY_PER_DRAWER;
 
   d->tinyCount = 0;
-  for (uint8_t i = 0; i < count && Wire.available(); i++) {
-    d->tinyAddrs[d->tinyCount++] = Wire.read();
+  for (uint8_t i = 0; i < count; i++) {
+    if (!Wire.available())
+      break;
+    d->tinyAddrs[d->tinyCount] = Wire.read();
+    for (uint8_t j = 0; j < UDID_SIZE; j++) {
+      d->tinyUdids[d->tinyCount][j] = Wire.available() ? Wire.read() : 0xFF;
+    }
+    d->tinyCount++;
   }
 }
 
@@ -317,19 +336,36 @@ void iic_sendLedRed(uint8_t drawerAddr, uint8_t tinyAddr) {
 // PUBLIC: PSA MANAGEMENT
 // Both call syncPSA() immediately so RP2040 caches update
 // ─────────────────────────────────────────────────────────────
-void iic_addPSA(uint8_t tinyAddr) {
+void iic_addPSA(uint8_t drawerAddr, uint8_t tinyAddr) {
   if (psa_contains(tinyAddr) || psaCount >= PSA_MAX_ENTRIES)
     return;
-  psaList[psaCount++] = tinyAddr;
+
+  // find UDID from drawer table
+  DrawerEntry *d = drawer_get(drawerAddr);
+  if (!d)
+    return;
+  uint8_t tinyIdx = 0xFF;
+  for (uint8_t i = 0; i < d->tinyCount; i++) {
+    if (d->tinyAddrs[i] == tinyAddr) {
+      tinyIdx = i;
+      break;
+    }
+  }
+  if (tinyIdx == 0xFF)
+    return;
+
+  memcpy(psaEntries[psaCount].udid, d->tinyUdids[tinyIdx], UDID_SIZE);
+  psaEntries[psaCount].addr = tinyAddr;
+  psaCount++;
   psa_save();
   syncPSA();
 }
 
 void iic_removePSA(uint8_t tinyAddr) {
   for (uint8_t i = 0; i < psaCount; i++) {
-    if (psaList[i] == tinyAddr) {
+    if (psaEntries[i].addr == tinyAddr) {
       for (uint8_t j = i; j < psaCount - 1; j++) {
-        psaList[j] = psaList[j + 1];
+        psaEntries[j] = psaEntries[j + 1];
       }
       psaCount--;
       psa_save();
@@ -391,4 +427,38 @@ uint8_t iic_getTinyAddr(uint8_t drawerIdx, uint8_t tinyIdx) {
   if (tinyIdx >= drawers[drawerIdx].tinyCount)
     return 0xFF;
   return drawers[drawerIdx].tinyAddrs[tinyIdx];
+}
+
+uint8_t iic_getPSACount() { return psaCount; }
+
+uint8_t iic_getPSAAddr(uint8_t idx) {
+  return (idx < psaCount) ? psaEntries[idx].addr : 0xFF;
+}
+
+// returns true if PSA address is currently enumerated in any drawer
+bool iic_isPSAAvailable(uint8_t idx) {
+  if (idx >= psaCount)
+    return false;
+  uint8_t addr = psaEntries[idx].addr;
+  for (uint8_t i = 0; i < drawerCount; i++) {
+    for (uint8_t j = 0; j < drawers[i].tinyCount; j++) {
+      if (drawers[i].tinyAddrs[j] == addr)
+        return true;
+    }
+  }
+  return false;
+}
+
+// returns drawer address that currently holds the PSA, 0xFF if unavailable
+uint8_t iic_getPSADrawerAddr(uint8_t psaIdx) {
+  if (psaIdx >= psaCount)
+    return 0xFF;
+  uint8_t addr = psaEntries[psaIdx].addr;
+  for (uint8_t i = 0; i < drawerCount; i++) {
+    for (uint8_t j = 0; j < drawers[i].tinyCount; j++) {
+      if (drawers[i].tinyAddrs[j] == addr)
+        return drawers[i].addr;
+    }
+  }
+  return 0xFF;
 }
