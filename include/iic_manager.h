@@ -13,6 +13,7 @@
 
 // ── ALERT pin ─────────────────────────────────────────────────
 #define PIN_ALERT 23
+#define ALERT_DEBOUNCE_MS 20
 
 // ── Commands ──────────────────────────────────────────────────
 #define CMD_GET_UDID 0x01

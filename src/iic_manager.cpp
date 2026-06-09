@@ -13,12 +13,17 @@ static uint8_t udid[UDID_SIZE];
 
 // ── Flags ─────────────────────────────────────────────────────
 static volatile bool alertPending = false;
+static volatile uint32_t alertDebounceMs = 0;
+
 static uint32_t lastScanMs = 0;
 
 // ─────────────────────────────────────────────────────────────
 // ALERT ISR
 // ─────────────────────────────────────────────────────────────
-static void IRAM_ATTR onAlert() { alertPending = true; }
+static void IRAM_ATTR onAlert() {
+  alertPending = true;
+  alertDebounceMs = millis();
+}
 
 // ─────────────────────────────────────────────────────────────
 // UDID HELPERS
@@ -103,7 +108,7 @@ static void syncPSA() {
     Wire.beginTransmission(drawers[i].addr);
     Wire.write(payload, len);
     Wire.endTransmission();
-    delay(5);
+    delayMicroseconds(5);
   }
 
   // also send to ARP default to cover unresolved drawers
@@ -175,7 +180,7 @@ static void fetchTinyList(uint8_t drawerAddr) {
   if (Wire.endTransmission() != 0)
     return;
 
-  delay(20);
+  delayMicroseconds(500);
 
   uint8_t expectLen = 1 + MAX_TINY_PER_DRAWER * (1 + UDID_SIZE);
   uint8_t received = Wire.requestFrom(drawerAddr, expectLen);
@@ -207,7 +212,7 @@ static bool getUdidCycle() {
   if (Wire.endTransmission() != 0)
     return false;
 
-  delay(5); // Give slaves time to prepare
+  delayMicroseconds(200); // Give slaves time to prepare
 
   // Step 2: Request UDID from the ARP address
   // During SMBus ARP, the winning slave responds
@@ -222,6 +227,8 @@ static bool getUdidCycle() {
   }
 
   uint8_t newAddr = getNextDrawerAddr();
+  if (newAddr == 0xFF)
+    return false;
 
   // Step 3: Assign address to winning device
   Wire.beginTransmission(ADDR_ARP_DEFAULT);
@@ -231,7 +238,7 @@ static bool getUdidCycle() {
   Wire.write(newAddr);
   Wire.endTransmission();
 
-  delay(15);
+  delayMicroseconds(200);
 
   // Step 4: Verify new address works
   Wire.beginTransmission(newAddr);
@@ -255,7 +262,7 @@ static void runEnumeration() {
   Wire.beginTransmission(ADDR_ARP_DEFAULT);
   Wire.write(CMD_PREPARE_ARP);
   Wire.endTransmission();
-  delay(10);
+  delayMicroseconds(200);
 
   uint8_t maxCycles = MAX_DRAWERS;
   while (maxCycles-- > 0) {
@@ -277,11 +284,11 @@ static void runEnumeration() {
       Serial.println("Warning: ALERT stuck LOW");
       break;
     }
-    delay(10);
+    delayMicroseconds(10);
   }
 
   // Small extra delay for debounce
-  delay(50);
+  delayMicroseconds(200);
 
   // Only re-attach if ALERT is HIGH
   if (digitalRead(PIN_ALERT) == HIGH) {
@@ -398,10 +405,16 @@ void iic_init() {
 // ─────────────────────────────────────────────────────────────
 void iic_update() {
   if (alertPending) {
-    alertPending = false;
-    detachInterrupt(digitalPinToInterrupt(PIN_ALERT));
-    Serial.println("Running Enumeration");
-    runEnumeration();
+    if (millis() - alertDebounceMs >= ALERT_DEBOUNCE_MS) {
+      alertPending = false;
+      if (digitalRead(PIN_ALERT) == LOW) {
+        // pin still LOW after full debounce window — real event
+        detachInterrupt(digitalPinToInterrupt(PIN_ALERT));
+        Serial.println("Running Enumeration");
+        runEnumeration();
+      }
+      // else: pin returned HIGH within debounce window, discord bounce
+    }
   }
 
   uint32_t now = millis();
