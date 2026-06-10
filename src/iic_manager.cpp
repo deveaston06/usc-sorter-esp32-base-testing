@@ -50,6 +50,54 @@ void iic_writeUDID(uint32_t serialNumber) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// UPSTREAM WIRE RETRY WRAPPERS
+// Retries if ALERT is bouncing during transmission
+// ─────────────────────────────────────────────────────────────
+static uint8_t wire_write(uint8_t addr, uint8_t cmd) {
+  for (uint8_t i = 0; i < WIRE_RETRY_COUNT; i++) {
+    if (alertPending && (millis() - alertDebounceMs) < ALERT_DEBOUNCE_MS) {
+      delay(ALERT_DEBOUNCE_MS);
+      continue;
+    }
+    Wire.beginTransmission(addr);
+    Wire.write(cmd);
+    if (Wire.endTransmission() == 0)
+      return 0;
+    delayMicroseconds(500);
+  }
+  return 1;
+}
+
+static uint8_t wire_write_buf(uint8_t addr, const uint8_t *data, uint8_t len) {
+  for (uint8_t i = 0; i < WIRE_RETRY_COUNT; i++) {
+    if (alertPending && (millis() - alertDebounceMs) < ALERT_DEBOUNCE_MS) {
+      delay(ALERT_DEBOUNCE_MS);
+      continue;
+    }
+    Wire.beginTransmission(addr);
+    Wire.write(data, len);
+    if (Wire.endTransmission() == 0)
+      return 0;
+    delayMicroseconds(500);
+  }
+  return 1;
+}
+
+static uint8_t wire_request(uint8_t addr, uint8_t len) {
+  for (uint8_t i = 0; i < WIRE_RETRY_COUNT; i++) {
+    if (alertPending && (millis() - alertDebounceMs) < ALERT_DEBOUNCE_MS) {
+      delay(ALERT_DEBOUNCE_MS);
+      continue;
+    }
+    uint8_t received = Wire.requestFrom(addr, len);
+    if (received > 0)
+      return received;
+    delayMicroseconds(500);
+  }
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────
 // PSA LIST EEPROM PERSISTENCE
 // ─────────────────────────────────────────────────────────────
 static void psa_save() {
@@ -175,15 +223,15 @@ static void fetchTinyList(uint8_t drawerAddr) {
   if (!d)
     return;
 
-  Wire.beginTransmission(drawerAddr);
-  Wire.write(CMD_SCAN_MODULES);
-  if (Wire.endTransmission() != 0)
+  if (wire_write(drawerAddr, CMD_SCAN_MODULES) != 0)
     return;
 
-  delayMicroseconds(500);
+  // give RP2040 enough time for onReceive ISR to fire and prepare reply buffer
+  // 5ms is conservative — ISR prepares buffer immediately on receive
+  delay(5);
 
   uint8_t expectLen = 1 + MAX_TINY_PER_DRAWER * (1 + UDID_SIZE);
-  uint8_t received = Wire.requestFrom(drawerAddr, expectLen);
+  uint8_t received = wire_request(drawerAddr, expectLen);
   if (received < 1)
     return;
 
@@ -201,23 +249,24 @@ static void fetchTinyList(uint8_t drawerAddr) {
     }
     d->tinyCount++;
   }
+  // drain any remaining bytes (guards against padding)
+  while (Wire.available())
+    Wire.read();
 }
 
 // ─────────────────────────────────────────────────────────────
 // SINGLE GET_UDID CYCLE
 // ─────────────────────────────────────────────────────────────
 static bool getUdidCycle() {
-  Wire.beginTransmission(ADDR_ARP_DEFAULT);
-  Wire.write(CMD_GET_UDID);
-  if (Wire.endTransmission() != 0)
+  // Step 1: Send get UDID command to all unassigned modules
+  if (wire_write(ADDR_ARP_DEFAULT, CMD_GET_UDID) != 0)
     return false;
 
-  delayMicroseconds(200); // Give slaves time to prepare
+  delayMicroseconds(200);
 
   // Step 2: Request UDID from the ARP address
   // During SMBus ARP, the winning slave responds
-  uint8_t received =
-      Wire.requestFrom((uint8_t)ADDR_ARP_DEFAULT, (uint8_t)UDID_SIZE);
+  uint8_t received = wire_request(ADDR_ARP_DEFAULT, UDID_SIZE);
   if (received < UDID_SIZE)
     return false;
 
@@ -231,12 +280,13 @@ static bool getUdidCycle() {
     return false;
 
   // Step 3: Assign address to winning device
-  Wire.beginTransmission(ADDR_ARP_DEFAULT);
-  Wire.write(CMD_ASSIGN_ADDR);
-  for (uint8_t i = 0; i < UDID_SIZE; i++)
-    Wire.write(winnerUdid[i]);
-  Wire.write(newAddr);
-  Wire.endTransmission();
+  uint8_t payload[UDID_SIZE + 2];
+  payload[0] = CMD_ASSIGN_ADDR;
+  memcpy(&payload[1], winnerUdid, UDID_SIZE);
+  payload[UDID_SIZE + 1] = newAddr;
+
+  if (wire_write_buf(ADDR_ARP_DEFAULT, payload, sizeof(payload)) != 0)
+    return false;
 
   delayMicroseconds(200);
 
