@@ -143,9 +143,10 @@ static void drawHeader() {
     break;
 
   case LEVEL_COMMANDS: {
+    const uint8_t *tu = iic_getTinyUDID(selectedDrawer, selectedTiny);
     uint8_t ta = iic_getTinyAddr(selectedDrawer, selectedTiny);
     snprintf(buf, sizeof(buf), "0x%02X %s          ", ta,
-             iic_isPSA(ta) ? "[PSA]" : "     ");
+             iic_isPSAByUDID(tu) ? "[PSA]" : "     ");
     lcd.print(buf);
     break;
   }
@@ -214,10 +215,11 @@ static void drawList() {
     }
 
     case LEVEL_CONTAINERS: {
+      const uint8_t *tu = iic_getTinyUDID(selectedDrawer, idx);
       uint8_t addr = iic_getTinyAddr(selectedDrawer, idx);
       char icon = led_getModuleIcon(addr);
       // show [P] tag if this ATtiny85 is in PSA list
-      char psaTag = iic_isPSA(addr) ? 'P' : ' ';
+      char psaTag = iic_isPSAByUDID(tu) ? 'P' : ' ';
       snprintf(buf, sizeof(buf), "0x%02X [%c][%c]       ", addr, icon, psaTag);
       lcd.print(buf);
       break;
@@ -232,9 +234,10 @@ static void drawList() {
       uint8_t addr = iic_getPSAAddr(idx);
       bool avail = iic_isPSAAvailable(idx);
       char icon = led_getModuleIcon(addr);
+      const uint8_t *udid = iic_getPSAUdid(idx);
       // format: 0xXX [icon] ON  or  0xXX [icon] --
-      snprintf(buf, sizeof(buf), "0x%02X [%c] %s        ", addr, icon,
-               avail ? "ON " : "-- ");
+      snprintf(buf, sizeof(buf), "0x%02X %02X%02X [%c]%s   ", addr, udid[6],
+               udid[7], icon, avail ? "ON " : "--");
       lcd.print(buf);
       break;
     }
@@ -330,6 +333,7 @@ static void executeSelection() {
   case LEVEL_COMMANDS: {
     uint8_t da = iic_getDrawerAddr(selectedDrawer);
     uint8_t ta = iic_getTinyAddr(selectedDrawer, selectedTiny);
+    const uint8_t *tu = iic_getTinyUDID(selectedDrawer, selectedTiny);
 
     switch (cursorIdx) {
     case CMD_IDX_GREEN:
@@ -343,8 +347,8 @@ static void executeSelection() {
       break;
 
     case CMD_IDX_ADD_PSA:
-      if (!iic_isPSA(ta)) {
-        iic_addPSA(da, ta);
+      if (!iic_isPSAByUDID(tu)) {
+        iic_addPSA(selectedDrawer, selectedTiny);
         showFeedback("PSA added + synced  ");
       } else {
         showFeedback("Already in PSA list ");
@@ -352,8 +356,8 @@ static void executeSelection() {
       break;
 
     case CMD_IDX_REM_PSA:
-      if (iic_isPSA(ta)) {
-        iic_removePSA(ta);
+      if (iic_isPSAByUDID(tu)) {
+        iic_removePSA(selectedDrawer, selectedTiny);
         showFeedback("PSA removed + synced");
       } else {
         showFeedback("Not in PSA list     ");
@@ -407,7 +411,7 @@ static void executeSelection() {
       break;
 
     case PSA_CMD_IDX_REMOVE:
-      iic_removePSA(psaAddr);
+      iic_removePSAEntry(selectedPSA);
       showFeedback("PSA removed + synced");
       // go back to PSA list since this entry no longer exists
       menuLevel = LEVEL_PSA_LIST;

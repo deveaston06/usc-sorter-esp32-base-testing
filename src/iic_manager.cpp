@@ -79,6 +79,14 @@ static uint8_t wire_write_buf(uint8_t addr, const uint8_t *data, uint8_t len) {
     if (Wire.endTransmission() == 0)
       return 0;
     delayMicroseconds(500);
+    Serial.print("retry wire_write_buf addr=0x");
+    Serial.print(addr, HEX);
+    Serial.print(" cmd=0x");
+    Serial.print(data[0], HEX);
+    Serial.print(" len=");
+    Serial.print(len);
+    Serial.print(" attempt=");
+    Serial.println(i + 1);
   }
   return 1;
 }
@@ -124,12 +132,27 @@ static void psa_load() {
   }
 }
 
-static bool psa_contains(uint8_t addr) {
-  for (uint8_t i = 0; i < psaCount; i++) {
-    if (psaEntries[i].addr == addr)
-      return true;
+static void psa_printAll() {
+  Serial.println("=== PSA Records ===");
+  if (psaCount == 0) {
+    Serial.println("  (empty)");
+    return;
   }
-  return false;
+  for (uint8_t i = 0; i < psaCount; i++) {
+    Serial.print("  [");
+    Serial.print(i);
+    Serial.print("] ");
+    // UDID as hex string
+    for (uint8_t j = 0; j < UDID_SIZE; j++) {
+      if (psaEntries[i].udid[j] < 0x10)
+        Serial.print("0");
+      Serial.print(psaEntries[i].udid[j], HEX);
+    }
+    Serial.print(" -> 0x");
+    if (psaEntries[i].addr < 0x10)
+      Serial.print("0");
+    Serial.println(psaEntries[i].addr, HEX);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -189,16 +212,14 @@ static void drawer_add(uint8_t addr) {
     drawers[drawerCount].addr = addr;
     drawers[drawerCount].tinyCount = 0;
     drawerCount++;
+    led_registerDrawer(addr);
   }
 }
 
 static void drawer_remove(uint8_t addr) {
   for (uint8_t i = 0; i < drawerCount; i++) {
     if (drawers[i].addr == addr) {
-      for (uint8_t j = 0; j < drawers[i].tinyCount; j++) {
-        led_clearModuleState(drawers[i].tinyAddrs[j]);
-      }
-      led_clearModuleState(addr);
+      led_clearAllTinies(addr);
       for (uint8_t j = i; j < drawerCount - 1; j++) {
         drawers[j] = drawers[j + 1];
       }
@@ -206,6 +227,7 @@ static void drawer_remove(uint8_t addr) {
       return;
     }
   }
+  led_removeDrawer(addr);
 }
 
 static uint8_t getNextDrawerAddr() {
@@ -230,6 +252,7 @@ static void fetchTinyList(uint8_t drawerAddr) {
   // 5ms is conservative — ISR prepares buffer immediately on receive
   delay(5);
 
+  // Request max possible, but only process what count says
   uint8_t expectLen = 1 + MAX_TINY_PER_DRAWER * (1 + UDID_SIZE);
   uint8_t received = wire_request(drawerAddr, expectLen);
   if (received < 1)
@@ -240,6 +263,9 @@ static void fetchTinyList(uint8_t drawerAddr) {
     count = MAX_TINY_PER_DRAWER;
 
   d->tinyCount = 0;
+  led_clearAllTinies(drawerAddr);
+
+  // Only read up to what count specifies, regardless of what's available
   for (uint8_t i = 0; i < count; i++) {
     if (!Wire.available())
       break;
@@ -247,6 +273,7 @@ static void fetchTinyList(uint8_t drawerAddr) {
     for (uint8_t j = 0; j < UDID_SIZE; j++) {
       d->tinyUdids[d->tinyCount][j] = Wire.available() ? Wire.read() : 0xFF;
     }
+    led_registerTiny(drawerAddr, d->tinyAddrs[d->tinyCount]);
     d->tinyCount++;
   }
   // drain any remaining bytes (guards against padding)
@@ -285,10 +312,9 @@ static bool getUdidCycle() {
   memcpy(&payload[1], winnerUdid, UDID_SIZE);
   payload[UDID_SIZE + 1] = newAddr;
 
-  if (wire_write_buf(ADDR_ARP_DEFAULT, payload, sizeof(payload)) != 0)
-    return false;
+  wire_write_buf(ADDR_ARP_DEFAULT, payload, sizeof(payload));
 
-  delayMicroseconds(200);
+  delayMicroseconds(400);
 
   // Step 4: Verify new address works
   Wire.beginTransmission(newAddr);
@@ -376,8 +402,7 @@ void iic_sendLedGreen(uint8_t drawerAddr, uint8_t tinyAddr) {
   Wire.write(CMD_LED_GREEN);
   Wire.write(tinyAddr);
   Wire.endTransmission();
-  led_setModuleState(tinyAddr, true);
-  led_setModuleState(drawerAddr, true);
+  led_setTinyState(drawerAddr, tinyAddr, true);
 }
 
 void iic_sendLedRed(uint8_t drawerAddr, uint8_t tinyAddr) {
@@ -385,42 +410,60 @@ void iic_sendLedRed(uint8_t drawerAddr, uint8_t tinyAddr) {
   Wire.write(CMD_LED_RED);
   Wire.write(tinyAddr);
   Wire.endTransmission();
-  led_setModuleState(tinyAddr, false);
-  led_setModuleState(drawerAddr, false);
+  led_setTinyState(drawerAddr, tinyAddr, false);
 }
 
 // ─────────────────────────────────────────────────────────────
 // PUBLIC: PSA MANAGEMENT
 // Both call syncPSA() immediately so RP2040 caches update
 // ─────────────────────────────────────────────────────────────
-void iic_addPSA(uint8_t drawerAddr, uint8_t tinyAddr) {
-  if (psa_contains(tinyAddr) || psaCount >= PSA_MAX_ENTRIES)
+void iic_addPSA(uint8_t drawerIdx, uint8_t tinyIdx) {
+  const uint8_t *tinyUdid = iic_getTinyUDID(drawerIdx, tinyIdx);
+
+  if (!tinyUdid || iic_isPSAByUDID(tinyUdid) || psaCount >= PSA_MAX_ENTRIES)
     return;
 
-  // find UDID from drawer table
-  DrawerEntry *d = drawer_get(drawerAddr);
-  if (!d)
+  uint8_t tinyAddr = iic_getTinyAddr(drawerIdx, tinyIdx);
+  if (tinyAddr == 0xFF)
     return;
-  uint8_t tinyIdx = 0xFF;
-  for (uint8_t i = 0; i < d->tinyCount; i++) {
-    if (d->tinyAddrs[i] == tinyAddr) {
-      tinyIdx = i;
-      break;
+
+  // ── Check: is this address already a PSA for a DIFFERENT UDID? ──
+  for (uint8_t i = 0; i < psaCount; i++) {
+    if (psaEntries[i].addr == tinyAddr) {
+      // Address already reserved for another UDID
+      // This should only happen if the user is trying to set PSA
+      // for a device that's already at the correct address
+      if (memcmp(psaEntries[i].udid, tinyUdid, UDID_SIZE) == 0) {
+        return; // Same UDID, same address — already set, skip
+      }
+      // Different UDID at same address — CONFLICT
+      // Don't allow this PSA; the existing PSA owns this address
+      Serial.println(
+          "PSA conflict: address already reserved for different UDID");
+      return;
     }
   }
-  if (tinyIdx == 0xFF)
-    return;
 
-  memcpy(psaEntries[psaCount].udid, d->tinyUdids[tinyIdx], UDID_SIZE);
+  // ── Check: does another ATtiny85 currently live at this address? ──
+  // If yes, that device will be evicted on next ARP (handled by RP2040)
+  // But we should warn the user
+
+  // Store PSA
+  memcpy(psaEntries[psaCount].udid, tinyUdid, UDID_SIZE);
   psaEntries[psaCount].addr = tinyAddr;
   psaCount++;
   psa_save();
   syncPSA();
 }
 
-void iic_removePSA(uint8_t tinyAddr) {
+void iic_removePSA(uint8_t drawerIdx, uint8_t tinyIdx) {
+  const uint8_t *tinyUdid = iic_getTinyUDID(drawerIdx, tinyIdx);
+
+  if (!tinyUdid || !iic_isPSAByUDID(tinyUdid) || psaCount < 1)
+    return;
+
   for (uint8_t i = 0; i < psaCount; i++) {
-    if (psaEntries[i].addr == tinyAddr) {
+    if (memcmp(psaEntries[i].udid, tinyUdid, UDID_SIZE) == 0) {
       for (uint8_t j = i; j < psaCount - 1; j++) {
         psaEntries[j] = psaEntries[j + 1];
       }
@@ -432,7 +475,31 @@ void iic_removePSA(uint8_t tinyAddr) {
   }
 }
 
-bool iic_isPSA(uint8_t tinyAddr) { return psa_contains(tinyAddr); }
+void iic_removePSAEntry(uint8_t psaIdx) {
+  if (psaIdx >= psaCount)
+    return;
+  for (uint8_t j = psaIdx; j < psaCount - 1; j++) {
+    psaEntries[j] = psaEntries[j + 1];
+  }
+  psaCount--;
+  psa_save();
+  syncPSA();
+}
+
+bool iic_isPSAByUDID(const uint8_t *udid) {
+  for (uint8_t i = 0; i < psaCount; i++) {
+    bool match = true;
+    for (uint8_t j = 0; j < UDID_SIZE; j++) {
+      if (psaEntries[i].udid[j] != udid[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match)
+      return true;
+  }
+  return false;
+}
 
 // ─────────────────────────────────────────────────────────────
 // PUBLIC: INIT
@@ -442,12 +509,13 @@ void iic_init() {
   udid_load();
   psa_load();
 
+  psa_printAll();
+
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(I2C_FREQ);
 
   pinMode(PIN_ALERT, INPUT);
   attachInterrupt(digitalPinToInterrupt(PIN_ALERT), onAlert, FALLING);
-  Serial.println("testing");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -492,36 +560,67 @@ uint8_t iic_getTinyAddr(uint8_t drawerIdx, uint8_t tinyIdx) {
   return drawers[drawerIdx].tinyAddrs[tinyIdx];
 }
 
+const uint8_t *iic_getTinyUDID(uint8_t drawerIdx, uint8_t tinyIdx) {
+  if (drawerIdx >= drawerCount)
+    return nullptr;
+  if (tinyIdx >= drawers[drawerIdx].tinyCount)
+    return nullptr;
+  return drawers[drawerIdx].tinyUdids[tinyIdx];
+}
+
 uint8_t iic_getPSACount() { return psaCount; }
 
 uint8_t iic_getPSAAddr(uint8_t idx) {
   return (idx < psaCount) ? psaEntries[idx].addr : 0xFF;
 }
 
+const uint8_t *iic_getPSAUdid(uint8_t idx) {
+  return (idx < psaCount) ? psaEntries[idx].udid : nullptr;
+}
+
 // returns true if PSA address is currently enumerated in any drawer
 bool iic_isPSAAvailable(uint8_t idx) {
   if (idx >= psaCount)
     return false;
-  uint8_t addr = psaEntries[idx].addr;
-  for (uint8_t i = 0; i < drawerCount; i++) {
-    for (uint8_t j = 0; j < drawers[i].tinyCount; j++) {
-      if (drawers[i].tinyAddrs[j] == addr)
+
+  uint8_t *psaUdid = psaEntries[idx].udid;
+
+  // Search all drawers for a tiny with matching UDID
+  for (uint8_t di = 0; di < drawerCount; di++) {
+    for (uint8_t ti = 0; ti < drawers[di].tinyCount; ti++) {
+      bool match = true;
+      for (uint8_t k = 0; k < UDID_SIZE; k++) {
+        if (drawers[di].tinyUdids[ti][k] != psaUdid[k]) {
+          match = false;
+          break;
+        }
+      }
+      if (match)
         return true;
     }
   }
-  return false;
+  return false; // Not found in any drawer
 }
 
 // returns drawer address that currently holds the PSA, 0xFF if unavailable
 uint8_t iic_getPSADrawerAddr(uint8_t psaIdx) {
   if (psaIdx >= psaCount)
     return 0xFF;
-  uint8_t addr = psaEntries[psaIdx].addr;
-  for (uint8_t i = 0; i < drawerCount; i++) {
-    for (uint8_t j = 0; j < drawers[i].tinyCount; j++) {
-      if (drawers[i].tinyAddrs[j] == addr)
-        return drawers[i].addr;
+
+  uint8_t *psaUdid = psaEntries[psaIdx].udid;
+
+  for (uint8_t di = 0; di < drawerCount; di++) {
+    for (uint8_t ti = 0; ti < drawers[di].tinyCount; ti++) {
+      bool match = true;
+      for (uint8_t k = 0; k < UDID_SIZE; k++) {
+        if (drawers[di].tinyUdids[ti][k] != psaUdid[k]) {
+          match = false;
+          break;
+        }
+      }
+      if (match)
+        return drawers[di].addr; // Return drawer address
     }
   }
-  return 0xFF;
+  return 0xFF; // Not found
 }

@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <EEPROM.h>
 #include <Wire.h>
+#include <lcd_encoder_manager.h>
 #include <led_manager.h>
 
 // ── I2C pins ──────────────────────────────────────────────────
@@ -76,10 +77,13 @@ uint8_t iic_getTinyAddr(uint8_t drawerIdx, uint8_t tinyIdx);
 void iic_sendLedGreen(uint8_t drawerAddr, uint8_t tinyAddr);
 void iic_sendLedRed(uint8_t drawerAddr, uint8_t tinyAddr);
 void iic_addPSA(uint8_t drawerAddr, uint8_t tinyAddr);
-void iic_removePSA(uint8_t tinyAddr);
-bool iic_isPSA(uint8_t tinyAddr);
+void iic_removePSA(uint8_t drawerIdx, uint8_t tinyIdx);
+void iic_removePSAEntry(uint8_t psaIdx);
 uint8_t iic_getPSACount();
 uint8_t iic_getPSAAddr(uint8_t idx);
+const uint8_t *iic_getPSAUdid(uint8_t idx);
+const uint8_t *iic_getTinyUDID(uint8_t drawerIdx, uint8_t tinyIdx);
+bool iic_isPSAByUDID(const uint8_t *udid);
 bool iic_isPSAAvailable(uint8_t idx);
 uint8_t iic_getPSADrawerAddr(uint8_t psaIdx);
 

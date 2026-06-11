@@ -32,14 +32,14 @@
 void setup() {
   Serial.begin(115200);
 
+  lcd_encoder_init();
+  // lcd_encoder_init() clears LCD and sets up encoder pins.
+  // First redraw happens on first encoder_update() call.
+
   iic_init();
   // iic_init() runs initial enumeration automatically.
   // All RP2040 drawers powered on before ESP32 will be found.
   // Drawers powered after boot are detected via ALERT interrupt.
-
-  lcd_encoder_init();
-  // lcd_encoder_init() clears LCD and sets up encoder pins.
-  // First redraw happens on first encoder_update() call.
 
   // ── FIRST TIME ONLY: write own UDID ───────────────────────
   // iic_writeUDID(0x00000100); // ESP32 unit 1
