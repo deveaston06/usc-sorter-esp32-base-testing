@@ -19,7 +19,7 @@
 // ── Encoder pins ──────────────────────────────────────────────
 #define ENC_CLK 19
 #define ENC_DT 18
-#define ENC_SW 17
+#define ENC_SW 5
 
 // ── Timing ────────────────────────────────────────────────────
 #define DEBOUNCE_MS 50
